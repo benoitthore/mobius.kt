@@ -1,20 +1,22 @@
 package kt.mobius
 
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kt.mobius.functions.Consumer
 import kt.mobius.functions.Producer
 import kt.mobius.runners.ImmediateWorkRunner
 import kt.mobius.runners.WorkRunner
 import kt.mobius.runners.WorkRunners
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.*
 
 class MobiusLoopControllerTest {
     companion object {
-        val effectHandler = Connectable<String, String> {
-            object : Connection<String> {
-                override fun accept(value: String) {}
-
-                override fun dispose() {}
-            }
+        val effectHandler = { _: Flow<String> ->
+            flow<String> { awaitCancellation() }
         }
 
         fun view(): Connectable<String, String> {
@@ -45,10 +47,10 @@ class MobiusLoopControllerTest {
                 Update { model, event -> Next.next(model + event) },
                 effectHandler
             )
-                .eventRunner(Producer { WorkRunners.immediate() })
-                .effectRunner(Producer { WorkRunners.immediate() }),
+                .eventRunner(Dispatchers.Unconfined)
+                .effectRunner(Dispatchers.Unconfined),
             "init",
-            WorkRunners.immediate()
+            Dispatchers.Unconfined
         )
 
         @Test
@@ -171,10 +173,10 @@ class MobiusLoopControllerTest {
                 Update { model, event -> Next.next(model + event) },
                 effectHandler
             )
-                .eventRunner(Producer { WorkRunners.immediate() })
-                .effectRunner(Producer { WorkRunners.immediate() }),
+                .eventRunner(Dispatchers.Unconfined)
+                .effectRunner(Dispatchers.Unconfined),
             "init",
-            WorkRunners.immediate()
+            Dispatchers.Unconfined
         )
 
         @Test
@@ -259,11 +261,11 @@ class MobiusLoopControllerTest {
                 Update { model, event -> Next.next(model + event) },
                 effectHandler
             )
-                .eventRunner(Producer { WorkRunners.immediate() })
-                .effectRunner(Producer { WorkRunners.immediate() })
+                .eventRunner(Dispatchers.Unconfined)
+                .effectRunner(Dispatchers.Unconfined)
                 .init(Init { First.first(it) }),
             "init",
-            WorkRunners.immediate()
+            Dispatchers.Unconfined
         )
 
         @Test
@@ -311,11 +313,11 @@ class MobiusLoopControllerTest {
                 Update { model, event -> Next.next(model + event) },
                 effectHandler
             )
-                .eventRunner(Producer { WorkRunners.immediate() })
-                .effectRunner(Producer { WorkRunners.immediate() })
+                .eventRunner(Dispatchers.Unconfined)
+                .effectRunner(Dispatchers.Unconfined)
                 .init(Init { First.first(it) }),
             "init",
-            WorkRunners.immediate()
+            Dispatchers.Unconfined
         )
 
         @Test
@@ -342,7 +344,7 @@ class MobiusLoopControllerTest {
 
     class EventsAndUpdates {
 
-        val mainThreadRunner = ImmediateWorkRunner()
+        val mainThreadRunner = Dispatchers.Main
         lateinit var underTest: MobiusLoopController<String, String, String>
 
         @BeforeTest
@@ -350,13 +352,13 @@ class MobiusLoopControllerTest {
             underTest = createWithWorkRunner(mainThreadRunner)
         }
 
-        fun createWithWorkRunner(mainThreadRunner: WorkRunner) =
+        fun createWithWorkRunner(mainThreadRunner: CoroutineDispatcher) =
             MobiusLoopController(
                 Mobius.loop<String, String, String>(Update { model, event ->
                     Next.next(model + event)
                 }, effectHandler)
-                    .eventRunner(Producer { WorkRunners.immediate() })
-                    .effectRunner(Producer { WorkRunners.immediate() }),
+                    .eventRunner(Dispatchers.Unconfined)
+                    .effectRunner(Dispatchers.Unconfined),
                 "init",
                 mainThreadRunner
             )

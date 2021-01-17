@@ -1,6 +1,6 @@
 package kt.mobius
 
-import kt.mobius.functions.Consumer
+import kotlinx.coroutines.flow.collect
 
 class ControllerStateRunning<M, E, F>(
     private val actions: ControllerActions<M, E>,
@@ -11,17 +11,13 @@ class ControllerStateRunning<M, E, F>(
 
     private val loop = loopFactory.startFrom(startModel)
 
-    override val stateName: String
-        get() = "running"
+    override val stateName: String = "running"
+    override val isRunning: Boolean = true
 
-    override val isRunning: Boolean
-        get() = true
-
-    fun start() {
-        loop.observe(
-            Consumer { model ->
-                actions.postUpdateView(model)
-            })
+    suspend fun start() {
+        loop.observe().collect {
+            actions.postUpdateView(it)
+        }
     }
 
     override fun onDispatchEvent(event: E) {

@@ -1,22 +1,16 @@
 package kt.mobius
 
-import kt.mobius.disposables.Disposable
-import kt.mobius.functions.Consumer
-import kt.mobius.functions.Producer
-import kt.mobius.runners.DefaultWorkRunners
-import kt.mobius.runners.ImmediateWorkRunner
-import kt.mobius.runners.WorkRunner
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlin.coroutines.CoroutineContext
 
 object Mobius {
     private object NOOP_INIT : Init<Any, Any> {
         override fun init(model: Any): First<Any, Any> {
             return First.first(model)
-        }
-    }
-
-    private object NOOP_EVENT_SOURCE : EventSource<Any> {
-        override fun subscribe(eventConsumer: Consumer<Any>): Disposable {
-            return Disposable { }
         }
     }
 
@@ -51,7 +45,7 @@ object Mobius {
     /**
      * Create a [MobiusLoop.Builder] to help you configure a [MobiusLoop] before starting it.
      *
-     * <p>Once done configuring the loop you can start the loop using [MobiusLoop.Factory.startFrom]
+     * Once done configuring the loop you can start the loop using [MobiusLoop.Factory.startFrom]
      *
      * @param update the [Update] function of the loop
      * @param effectHandler the [Connectable] effect handler of the loop
@@ -62,20 +56,18 @@ object Mobius {
     @mpp.JsName("loop")
     fun <M, E, F> loop(
         update: Update<M, E, F>,
-        effectHandler: Connectable<F, E>
+        effectHandler: (Flow<F>) -> Flow<E>
     ): MobiusLoop.Builder<M, E, F> {
-        val defaultWorkRunners = DefaultWorkRunners()
         return Builder(
             update,
             effectHandler,
             NOOP_INIT as Init<M, F>,
-            NOOP_EVENT_SOURCE as EventSource<E>,
-            defaultWorkRunners.eventWorkRunnerProducer(),
-            defaultWorkRunners.effectWorkRunnerProducer(),
+            flow { awaitCancellation() },
+            Dispatchers.Default,
+            Dispatchers.Default,
             NOOP_LOGGER as MobiusLoop.Logger<M, E, F>
         )
     }
-
     /**
      * Create a [MobiusLoop.Controller] that allows you to start, stop, and restart MobiusLoops.
      *
@@ -86,7 +78,7 @@ object Mobius {
     @mpp.JvmStatic
     @mpp.JsName("controller")
     fun <M, E, F> controller(loopFactory: MobiusLoop.Factory<M, E, F>, defaultModel: M): MobiusLoop.Controller<M, E> {
-        return MobiusLoopController(loopFactory, defaultModel, ImmediateWorkRunner())
+        return MobiusLoopController(loopFactory, defaultModel, Dispatchers.Main)
     }
 
     /**
@@ -102,18 +94,18 @@ object Mobius {
     fun <M, E, F> controller(
         loopFactory: MobiusLoop.Factory<M, E, F>,
         defaultModel: M,
-        modelRunner: WorkRunner
+        modelRunner: CoroutineDispatcher
     ): MobiusLoop.Controller<M, E> {
         return MobiusLoopController(loopFactory, defaultModel, modelRunner)
     }
 
     data class Builder<M, E, F>(
         private val update: Update<M, E, F>,
-        private val effectHandler: Connectable<F, E>,
+        private val effectHandler: (Flow<F>) -> Flow<E>,
         private val init: Init<M, F>,
-        private val eventSource: EventSource<E>,
-        private val eventRunner: Producer<WorkRunner>,
-        private val effectRunner: Producer<WorkRunner>,
+        private val eventSource: Flow<E>,
+        private val eventRunner: CoroutineContext,
+        private val effectRunner: CoroutineContext,
         private val logger: MobiusLoop.Logger<M, E, F>
     ) : MobiusLoop.Builder<M, E, F> {
 
@@ -121,36 +113,32 @@ object Mobius {
             return copy(init = init)
         }
 
-        override fun eventSource(eventSource: EventSource<E>): MobiusLoop.Builder<M, E, F> {
+        override fun eventSource(eventSource: Flow<E>): MobiusLoop.Builder<M, E, F> {
             return copy(eventSource = eventSource)
-        }
-
-        override fun eventSources(vararg eventSources: EventSource<E>): MobiusLoop.Builder<M, E, F> {
-            return copy(eventSource = MergedEventSource.from(*eventSources))
         }
 
         override fun logger(logger: MobiusLoop.Logger<M, E, F>): MobiusLoop.Builder<M, E, F> {
             return copy(logger = logger)
         }
 
-        override fun eventRunner(eventRunner: Producer<WorkRunner>): MobiusLoop.Builder<M, E, F> {
+        override fun eventRunner(eventRunner: CoroutineContext): MobiusLoop.Builder<M, E, F> {
             return copy(eventRunner = eventRunner)
         }
 
-        override fun effectRunner(effectRunner: Producer<WorkRunner>): MobiusLoop.Builder<M, E, F> {
+        override fun effectRunner(effectRunner: CoroutineContext): MobiusLoop.Builder<M, E, F> {
             return copy(effectRunner = effectRunner)
         }
 
         override fun startFrom(startModel: M): MobiusLoop<M, E, F> {
-            val loggingInit = LoggingInit(init, logger)
-            val loggingUpdate = LoggingUpdate(update, logger)
-
             return MobiusLoop.create(
-                MobiusStore.create(loggingInit, loggingUpdate, startModel),
+                startModel,
+                LoggingInit(init, logger),
+                LoggingUpdate(update, logger),
                 effectHandler,
                 eventSource,
-                eventRunner.get(),
-                effectRunner.get()
+                eventRunner,
+                effectRunner,
+                Dispatchers.Default // TODO: Make configurable
             )
         }
     }

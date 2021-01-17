@@ -31,16 +31,6 @@ _(Source: [Concepts > Mobius Loop](https://github.com/spotify/mobius/wiki/Concep
 By combining this concept with Kotlin's MPP features, mobius.kt allows you to write and test all of your pure functions (application and/or business logic) in Kotlin and deploy it everywhere.
 This leaves impure functions to the native platform, which can be written in their primary language (Js, Java, Objective-c/Swift) or in Kotlin!
 
-## Samples
-
-
-### Todo
-
-##### iOS
-
-Open and run the `samples/todo/todo-ios` Xcode project, it contains a build step to produce the Kotlin framework.
-Note the first build will take some time while it downloads all the necessary dependencies.
-
 ## Download
 
 ![](https://img.shields.io/static/v1?label=&message=Platforms&color=grey)

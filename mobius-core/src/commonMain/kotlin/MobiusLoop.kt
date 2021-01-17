@@ -1,26 +1,40 @@
 package kt.mobius
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.transform
+import kotlinx.coroutines.launch
 import kt.mobius.disposables.Disposable
-import kt.mobius.functions.Consumer
 import kt.mobius.functions.Producer
-import kt.mobius.runners.Runnable
 import kt.mobius.runners.WorkRunner
+import kotlin.coroutines.CoroutineContext
 import kotlin.jvm.Synchronized
-import kotlin.jvm.Volatile
 
 /**
  * This is the main loop for Mobius.
- *
  *
  * It hooks up all the different parts of the main Mobius loop, and dispatches messages
  * internally on the appropriate executors.
  */
 class MobiusLoop<M, E, F> private constructor(
-    eventProcessorFactory: EventProcessor.Factory<M, E, F>,
-    effectHandler: Connectable<F, E>,
-    eventSource: EventSource<E>,
-    eventRunner: WorkRunner,
-    effectRunner: WorkRunner
+    startModel: M,
+    private val init: Init<M, F>,
+    private val update: Update<M, E, F>,
+    effectHandler: (Flow<F>) -> Flow<E>,
+    eventSource: Flow<E>,
+    eventContext: CoroutineContext,
+    effectContext: CoroutineContext,
+    runtimeContext: CoroutineContext,
 ) : Disposable {
 
     companion object {
@@ -28,83 +42,77 @@ class MobiusLoop<M, E, F> private constructor(
         @mpp.JvmStatic
         @mpp.JsName("create")
         fun <M, E, F> create(
-            store: MobiusStore<M, E, F>,
-            effectHandler: Connectable<F, E>,
-            eventSource: EventSource<E>,
-            eventRunner: WorkRunner,
-            effectRunner: WorkRunner
+            startModel: M,
+            init: Init<M, F>,
+            update: Update<M, E, F>,
+            effectHandler: (Flow<F>) -> Flow<E>,
+            eventSource: Flow<E>,
+            eventContext: CoroutineContext,
+            effectContext: CoroutineContext,
+            runtimeContext: CoroutineContext,
         ): MobiusLoop<M, E, F> {
-
             return MobiusLoop(
-                EventProcessor.Factory(store),
+                startModel,
+                init,
+                update,
                 effectHandler,
                 eventSource,
-                eventRunner,
-                effectRunner
+                eventContext,
+                effectContext,
+                runtimeContext
             )
         }
     }
 
-    private val eventDispatcher = MessageDispatcher(eventRunner, Consumer<E> { event ->
-        eventProcessor.update(event)
-    })
-    private val effectDispatcher = MessageDispatcher(effectRunner, Consumer<F> { effect ->
-        try {
-            effectConsumer.accept(effect)
-        } catch (t: Throwable) {
-            throw ConnectionException(effect!!, t)
-        }
-    })
+    private val scope = CoroutineScope(SupervisorJob() + runtimeContext)
 
-    private val eventProcessor = eventProcessorFactory.create(effectDispatcher, Consumer { model ->
-        mpp.synchronized(modelObservers) {
-            mostRecentModel = model
-            for (observer in modelObservers) {
-                observer.accept(model)
-            }
-        }
-    })
-    private val effectConsumer: Connection<F>
-    private val eventSourceDisposable: Disposable
+    private val eventFlow = MutableSharedFlow<E>(
+        extraBufferCapacity = Int.MAX_VALUE
+    )
+    private val effectFlow = MutableSharedFlow<F>(
+        extraBufferCapacity = Int.MAX_VALUE
+    )
+    private val modelFlow = MutableStateFlow(startModel)
 
-    private val modelObservers = arrayListOf<Consumer<M>>()
+    val mostRecentModel: M?
+        get() = modelFlow.value
 
-    @Volatile
-    var mostRecentModel: M? = null
-        private set
-
-    @Volatile
-    private var disposed: Boolean = false
+    private val disposed = MutableStateFlow(false)
 
     init {
-        val eventConsumer = object : Consumer<E> {
-            override fun accept(event: E) {
-                dispatchEvent(event)
+        effectHandler(effectFlow)
+            .flowOn(effectContext)
+            .onEach(eventFlow::emit)
+            .flowOn(eventContext)
+            .launchIn(scope)
+
+        merge(eventSource, eventFlow)
+            .onStart {
+                val first = init.init(startModel)
+                modelFlow.tryEmit(first.model())
+                first.effects().forEach(effectFlow::tryEmit)
             }
-        }
-
-        this.effectConsumer = effectHandler.connect(eventConsumer)
-        this.eventSourceDisposable = eventSource.subscribe(eventConsumer)
-
-        eventRunner.post(
-            object : Runnable {
-                override fun run() {
-                    eventProcessor.init()
+            .onEach { event ->
+                val next = update(modelFlow.value, event)
+                if (next.hasModel()) {
+                    modelFlow.value = next.modelUnsafe()
                 }
-            })
+                next.effects().forEach(effectFlow::tryEmit)
+            }
+            .flowOn(eventContext)
+            .launchIn(scope)
     }
 
     fun dispatchEvent(event: E) {
-        if (disposed)
-            throw IllegalStateException(
-                "This loop has already been disposed. You cannot dispatch events after disposal"
-            )
-        eventDispatcher.accept(event)
+        check(!disposed.value) {
+            "This loop has already been disposed. You cannot dispatch events after disposal"
+        }
+        eventFlow.tryEmit(event)
     }
 
     /**
-     * Add an observer of model changes to this loop. If [.getMostRecentModel] is non-null,
-     * the observer will immediately be notified of the most recent model. The observer will be
+     * Add an observer of model changes to this loop. If [mostRecentModel] is non-null, the
+     * observer will immediately be notified of the most recent model. The observer will be
      * notified of future changes to the model until the loop or the returned [Disposable] is
      * disposed.
      *
@@ -113,44 +121,21 @@ class MobiusLoop<M, E, F> private constructor(
      * @throws NullPointerException if the observer is null
      * @throws IllegalStateException if the loop has been disposed
      */
-    fun observe(observer: Consumer<M>): Disposable {
-        mpp.synchronized(modelObservers) {
-            if (disposed) {
-                error("This loop has already been disposed. You cannot observe a disposed loop")
-            }
-
-            val currentModel = mostRecentModel
-            if (currentModel != null) {
-                // Start by emitting the most recently received model.
-                observer.accept(currentModel)
-            }
-
-            modelObservers.add(observer)
+    fun observe(): Flow<M> {
+        check(!disposed.value) {
+            "This loop has already been disposed. You cannot observe a disposed loop"
         }
-
-        return Disposable {
-            mpp.synchronized(modelObservers) {
-                modelObservers.remove(observer)
+        return disposed.transform { disposed ->
+            if (!disposed) {
+                emitAll(modelFlow)
             }
         }
     }
 
     @Synchronized
     override fun dispose() {
-        mpp.synchronized(modelObservers) {
-            modelObservers.clear()
-        }
-
-        eventDispatcher.disable()
-        effectDispatcher.disable()
-
-        eventSourceDisposable.dispose()
-        effectConsumer.dispose()
-
-        eventDispatcher.dispose()
-        effectDispatcher.dispose()
-
-        disposed = true
+        disposed.value = true
+        scope.cancel()
     }
 
     /**
@@ -177,14 +162,7 @@ class MobiusLoop<M, E, F> private constructor(
          * please use [.eventSources].
          */
         @mpp.JsName("eventSource")
-        fun eventSource(eventSource: EventSource<E>): Builder<M, E, F>
-
-        /**
-         * @return a new [Builder] with an [EventSource] that merges the supplied event
-         * sources, and the same values as the current one for the other fields.
-         */
-        @mpp.JsName("eventSources")
-        fun eventSources(vararg eventSources: EventSource<E>): Builder<M, E, F>
+        fun eventSource(eventSource: Flow<E>): Builder<M, E, F>
 
         /**
          * @return a new [Builder] with the supplied logger, and the same values as the current
@@ -198,14 +176,14 @@ class MobiusLoop<M, E, F> private constructor(
          * current one for the other fields.
          */
         @mpp.JsName("eventRunner")
-        fun eventRunner(eventRunner: Producer<WorkRunner>): Builder<M, E, F>
+        fun eventRunner(eventRunner: CoroutineContext): Builder<M, E, F>
 
         /**
          * @return a new [Builder] with the supplied effect runner, and the same values as the
          * current one for the other fields.
          */
         @mpp.JsName("effectRunner")
-        fun effectRunner(effectRunner: Producer<WorkRunner>): Builder<M, E, F>
+        fun effectRunner(effectRunner: CoroutineContext): Builder<M, E, F>
     }
 
     interface Factory<M, E, F> {
@@ -244,7 +222,7 @@ class MobiusLoop<M, E, F> private constructor(
         /**
          * Connect a view to this controller.
          *
-         * Must be called before [.start].
+         * Must be called before [start].
          *
          * The [Connectable] will be given an event consumer, which the view should use to send
          * events to the MobiusLoop. The view should also return a [Connection] that accepts
@@ -275,7 +253,6 @@ class MobiusLoop<M, E, F> private constructor(
 
         /**
          * Stop the currently running MobiusLoop.
-         *
          *
          * When the loop is stopped, the last model of the loop will be remembered and used as the
          * first model the next time the loop is started.
