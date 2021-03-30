@@ -5,6 +5,7 @@ enableFeaturePreview("GRADLE_METADATA")
 include(
     ":mobius-core",
     ":mobius-extras",
+    ":mobius-test",
     ":mobius-internal",
     ":jvm:mobius-android"
 )
