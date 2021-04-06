@@ -28,7 +28,7 @@ import kt.mobius.First
 //import org.hamcrest.Matchers.hasItems
 //import org.hamcrest.TypeSafeDiagnosingMatcher
 
-import com.natpryce
+import com.natpryce.hamkrest.*
 
 /** Provides utility functions for matching against [First] instances.  */
 object FirstMatchers {
