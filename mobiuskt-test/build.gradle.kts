@@ -20,8 +20,8 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation("com.natpryce:hamkrest:1.8.0.1")
-                implementation(project(":mobius-core"))
-                implementation(project(":mobius-internal"))
+                implementation(project(":mobiuskt-core"))
+                implementation(project(":mobiuskt-internal"))
             }
         }
 
